@@ -1,0 +1,53 @@
+---
+title: "Project 2 Data Transformations Approach"
+author: "Chanice McKenzie"
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+---
+
+# Introduction - Planned Approach
+
+For Project 2, I plan to work with three independent wide-format datasets covering average tuition by state, New York income distribution, and population estimates for the ten largest states. My goal is to create a reproducible workflow in R that preserves each original dataset, reshapes its repeated measurement columns into tidy observations, and supports a separate descriptive analysis for each topic. I will use `tidyr` and `dplyr` for the transformations and `ggplot2` for clear visual summaries.
+
+# Dataset 1: U.S. Average Tuition by State
+
+**Source file:** `us_avg_tuition(Table 5).csv` (provided dataset; original publisher and definition of tuition to be confirmed from its Discussion 5A post).
+
+**Current structure:** States appear as rows, while academic years from 2004–05 through 2015–16 appear as separate columns. The reported tuition values include dollar signs and comma separators.
+
+**Planned transformation:** I will preserve the supplied CSV as the raw input, reshape the academic-year columns into a single year variable and a single tuition variable, standardize column names, and convert the tuition strings into numeric dollar amounts. I will check for missing entries, unexpected nonnumeric values, and duplicate state–year combinations before using the tidy result.
+
+**Planned analysis:** I will compare how reported tuition changes over the available academic years and identify states with the largest and smallest changes. A line chart for selected states and a summary table of changes could communicate the patterns. I will avoid interpreting nominal-dollar changes as inflation-adjusted changes unless inflation data are separately incorporated.
+
+# Dataset 2: New York Income Distribution
+
+**Source file:** `New-York-Income Distribution.xlsx` (provided spreadsheet; publisher and exact indicator definitions to be verified from the workbook or Discussion 5A post).
+
+**Current structure:** The spreadsheet contains a multirow heading, descriptive income-component rows, and two groups of quintile-share columns: one ranked by personal income and the other by disposable personal income. It also includes total-dollar information and some entries that are ranges or labels rather than shares.
+
+**Planned transformation:** I will first preserve all original information in a wide-format CSV, including the descriptive headings and notes where relevant, before writing transformation code. I will identify the true column headers and distinguish metadata, income components, totals, and quintile shares. I plan to reshape the repeated quintile columns into variables for ranking basis, quintile, and share while retaining the income-component description. I will standardize column names and carefully document how I handle blanks, negative shares, and cells containing text ranges; I will not automatically discard them because some may be meaningful.
+
+**Planned analysis:** I will compare the distribution of selected income components across quintiles and examine differences between the personal-income and disposable-personal-income rankings. A grouped bar chart or faceted plot could show the shares. I will check the source's definitions before drawing conclusions about inequality or interpreting shares as household income amounts.
+
+# Dataset 3: Population of the Ten Largest States
+
+**Source file:** `census_top10_states_2022_untidy.csv` (provided dataset with census-style population estimates; exact original source to be documented from Discussion 5A).
+
+**Current structure:** Each row represents a ranked state, with separate columns for the April 1, 2020 estimates base and the July 1 estimates for 2021 and 2022. The ranking and state name are identifier fields.
+
+**Planned transformation:** I will retain the original wide-format CSV, then pivot the date-specific population columns into a date/estimate-period field and a population field. I will rename identifiers consistently, convert population to numeric values, and distinguish the 2020 estimates base from the July 1 annual estimates rather than treating all dates as equivalent observations. I will check for missing values, duplicate state–period records, and unexpected population values.
+
+**Planned analysis:** I will compare changes in population between the available estimate periods, focusing especially on 2021 to 2022. A table of absolute and percentage changes and a bar chart could highlight which states gained or lost population. Because the file contains only the ten listed states, the findings will not describe the entire United States.
+
+# Anticipated Challenges and Quality Checks
+
+The three files have different kinds of wide structure. The tuition file contains currency-formatted values, the income workbook has merged or multilevel-style headers and mixed content, and the population file combines an estimates-base date with annual estimates. I expect that identifying the appropriate observation unit and preserving the meaning of the original variables will require more care than simply pivoting every non-ID column.
+
+For each dataset, I will document decisions about missing and inconsistent values rather than applying blanket deletion. I will verify that the transformation preserves the expected number of measurements, does not create unintended duplicates, and retains the original values after parsing. Each analysis will begin from its tidy dataset, not from the raw file.
+
