@@ -1,0 +1,263 @@
+---
+title: "DATA 607 Project 2 — New York Income Data Tidying and Analysis"
+subtitle: "Dataset 3 — New York Income Distribution"
+author: "Chanice McKenzie"
+format:
+  html:
+    toc: true
+    code-fold: false
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# 1. Data source and raw data construction
+
+This report uses the original **New-York-Income Distribution.csv** file from the [DATA 607 Project 2 repository](https://chanicemcken.github.io/Data-607-Project-2/). The raw CSV is preserved without modification. The source's original publisher, measurement year, and definitions should be checked against the original Discussion 5A item before submission. The analysis below reports only values present in the supplied file; it does not assume that every number is a dollar amount or a percentage.
+
+The report reads the file directly; it does not replace the original data.
+
+```{r}
+#| label: setup
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(knitr)
+library(scales)
+set.seed(123)
+theme_set(theme_minimal(base_size = 12))
+```
+
+# 2. Structure before tidying
+
+```{r}
+#| label: import-raw
+file_candidates <- c(
+  "data/New-York-Income Distribution.csv",
+  "New-York-Income Distribution.csv",
+  "data/New-York-Income%20Distribution.csv",
+  "New-York-Income%20Distribution.csv"
+)
+existing <- file_candidates[file.exists(file_candidates)]
+if (length(existing) == 0) {
+  stop("Place 'New-York-Income Distribution.csv' in the project root or data/ folder.")
+}
+raw_path <- existing[1]
+income_raw <- read_csv(raw_path, show_col_types = FALSE, name_repair = "unique")
+if (nrow(income_raw) == 0 || ncol(income_raw) < 2) {
+  stop("The input CSV must contain data and at least two columns.")
+}
+cat("Raw file:", raw_path, "\n")
+cat("Rows:", nrow(income_raw), " Columns:", ncol(income_raw), "\n")
+kable(data.frame(original_column = names(income_raw)), caption = "Original column names")
+kable(head(income_raw, 6), caption = "Representative sample of original wide-format data")
+```
+
+# 3. Data preparation
+
+## 3.1 Preserve original source
+
+The imported `income_raw` object is never overwritten. The source CSV remains in wide format in the repository. No manually edited intermediary file is required.
+
+## 3.2 Normalize names and reshape wide to long
+
+Column names are standardized to lowercase snake case. The first column is treated as a row identifier/label, and **all remaining original columns are pivoted into a variable/value pair**. This approach preserves every source cell, including missing values, but may need a more specific identifier selection if the original CSV has multiple geographic or demographic identifier columns. Original names are retained in the lookup table.
+
+```{r}
+#| label: tidy-data
+clean_names <- function(x) {
+  x <- str_to_lower(x)
+  x <- str_replace_all(x, "[^a-z0-9]+", "_")
+  x <- str_replace_all(x, "^_+|_+$", "")
+  x[x == ""] <- "unnamed"
+  make.unique(x, sep = "_")
+}
+
+column_lookup <- tibble(
+  original_name = names(income_raw),
+  standardized_name = clean_names(names(income_raw))
+)
+
+income_named <- income_raw |>
+  rename_with(clean_names)
+
+# Add a stable row ID so duplicate labels do not merge distinct records.
+income_wide <- income_named |>
+  mutate(source_row = row_number(), .before = 1)
+
+identifier_column <- names(income_named)[1]
+
+# Convert measured columns to character before pivoting: this preserves
+# mixed text/numeric columns without type-coercion errors.
+income_tidy <- income_wide |>
+  mutate(across(-c(source_row, all_of(identifier_column)), as.character)) |>
+  pivot_longer(
+    cols = -c(source_row, all_of(identifier_column)),
+    names_to = "measure",
+    values_to = "raw_value",
+    values_drop_na = FALSE
+  ) |>
+  rename(category = all_of(identifier_column)) |>
+  mutate(
+    category = str_squish(as.character(category)),
+    category = na_if(category, ""),
+    measure = str_squish(measure),
+    raw_value = str_squish(raw_value),
+    raw_value = na_if(raw_value, ""),
+    raw_value = if_else(
+      !is.na(raw_value) & raw_value %in% c("N/A", "NA", "n/a", "-", "--"),
+      NA_character_, raw_value
+    ),
+    numeric_value = suppressWarnings(parse_number(raw_value)),
+    # A numeric value is accepted only if the whole cell resembles a number,
+    # optional currency, commas, or percent. Text labels are not numbers.
+    numeric_value = if_else(
+      !is.na(raw_value) &
+        str_detect(raw_value, "^\\s*[$]?[+-]?[0-9][0-9,]*(\\.[0-9]+)?%?\\s*$"),
+      numeric_value, NA_real_
+    )
+  )
+
+kable(column_lookup, caption = "Original-to-standardized variable names")
+kable(head(income_tidy, 12), caption = "Tidy data preview")
+```
+
+## 3.3 Document missing and inconsistent values
+
+Missing values are retained rather than automatically removed; this avoids silently changing the denominator. Non-numeric text is preserved in `raw_value`, with `numeric_value` set to `NA`. Percentage strings are converted to their stated numeric percentage points (e.g., `12%` becomes `12`), **not** proportions. Mixed-unit measures should not be compared directly.
+
+```{r}
+#| label: validation
+expected_rows <- nrow(income_raw) * (ncol(income_raw) - 1)
+stopifnot(nrow(income_tidy) == expected_rows)
+stopifnot(!anyDuplicated(income_tidy[c("source_row", "measure")]))
+
+quality <- income_tidy |>
+  group_by(measure) |>
+  summarise(
+    total_cells = n(),
+    missing_cells = sum(is.na(raw_value)),
+    numeric_cells = sum(!is.na(numeric_value)),
+    nonnumeric_nonmissing = sum(!is.na(raw_value) & is.na(numeric_value)),
+    missing_percent = 100 * missing_cells / total_cells,
+    .groups = "drop"
+  )
+kable(quality, digits = 1, caption = "Data quality by measurement column")
+```
+
+# 4. Analysis
+
+## Analytical methods
+
+The report summarizes numeric observations within each original measurement column. It reports counts, mean, median, minimum and maximum, without combining measures with potentially different units. The charts visualize (1) missingness, (2) the distribution of numeric values by measure, and (3) values for a single selected numeric measure by category. These descriptive results do not establish causes or representativeness.
+
+```{r}
+#| label: summary-table
+measure_summary <- income_tidy |>
+  group_by(measure) |>
+  summarise(
+    observations = sum(!is.na(numeric_value)),
+    mean_value = if (all(is.na(numeric_value))) NA_real_ else mean(numeric_value, na.rm = TRUE),
+    median_value = if (all(is.na(numeric_value))) NA_real_ else median(numeric_value, na.rm = TRUE),
+    minimum_value = if (all(is.na(numeric_value))) NA_real_ else min(numeric_value, na.rm = TRUE),
+    maximum_value = if (all(is.na(numeric_value))) NA_real_ else max(numeric_value, na.rm = TRUE),
+    .groups = "drop"
+  )
+kable(measure_summary, digits = 2, caption = "Descriptive statistics by measure (units as reported in source)")
+```
+
+## Figure 1. Missingness by measure
+
+A bar chart makes it easy to identify columns that require caution before analysis.
+
+```{r}
+#| label: fig-missing
+#| fig-cap: "Missing data by original measurement column"
+ggplot(quality, aes(x = reorder(measure, missing_percent), y = missing_percent)) +
+  geom_col(fill = "#366699") +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 100), labels = label_percent(scale = 1)) +
+  labs(title = "Missing observations by measure",
+       x = "Measurement column", y = "Missing observations (%)")
+```
+
+## Figure 2. Distribution of numeric values
+
+Boxplots show within-measure variation. Faceting with free scales prevents unlike units from sharing a misleading axis.
+
+```{r}
+#| label: fig-distribution
+#| fig-cap: "Numeric-value distribution for each measurement column"
+plot_data <- income_tidy |> filter(!is.na(numeric_value))
+if (nrow(plot_data) > 0) {
+  ggplot(plot_data, aes(x = "", y = numeric_value)) +
+    geom_boxplot(fill = "#80b1d3", na.rm = TRUE) +
+    facet_wrap(~ measure, scales = "free_y") +
+    labs(title = "Distribution of reported numeric values",
+         x = NULL, y = "Reported value (source-specific units)") +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+} else {
+  cat("No fully numeric cells were detected; distribution chart omitted.")
+}
+```
+
+## Figure 3. Category comparison for one numeric measure
+
+Only one measure is compared at a time to avoid mixing dollar values, counts and percentages. The selected measure is the one with the most valid numeric observations; this is a reproducible descriptive choice, not a claim of substantive importance.
+
+```{r}
+#| label: fig-category
+#| fig-cap: "Category comparison for the numeric measure with most available observations"
+valid_measures <- measure_summary |>
+  filter(observations > 0) |>
+  arrange(desc(observations), measure)
+if (nrow(valid_measures) > 0) {
+  selected_measure <- valid_measures$measure[1]
+  category_data <- income_tidy |>
+    filter(measure == selected_measure, !is.na(numeric_value)) |>
+    mutate(category_display = if_else(is.na(category),
+                                      paste0("Row ", source_row), category))
+  ggplot(category_data, aes(x = reorder(category_display, numeric_value),
+                            y = numeric_value)) +
+    geom_col(fill = "#4c956c") +
+    coord_flip() +
+    labs(title = paste("Reported values:", selected_measure),
+         x = "Original row category", y = "Reported value (source-specific units)")
+} else {
+  cat("No numeric measure available for a category comparison.")
+}
+```
+
+# 5. Conclusions and recommendations
+
+```{r}
+#| label: conclusions
+cat("The source file contains", nrow(income_raw), "original rows and",
+    ncol(income_raw), "columns. The tidy transformation produced",
+    nrow(income_tidy), "long-format rows, preserving all source cells.\n\n")
+cat("There are", sum(is.na(income_tidy$raw_value)), "missing source values and",
+    sum(!is.na(income_tidy$raw_value) & is.na(income_tidy$numeric_value)),
+    "nonmissing cells that were not classified as plain numeric values.\n\n")
+if (nrow(valid_measures) > 0) {
+  best <- valid_measures[1, ]
+  cat("For the measure '", best$measure, "', ", best$observations,
+      "numeric observations were available. The mean was ",
+      format(round(best$mean_value, 2), big.mark = ","),
+      " and the median was ", format(round(best$median_value, 2), big.mark = ","),
+      " (in the source column's units). Values ranged from ",
+      format(round(best$minimum_value, 2), big.mark = ","), " to ",
+      format(round(best$maximum_value, 2), big.mark = ","), ".\n\n", sep = "")
+}
+```
+
+**Recommendations.** First, verify the original income definitions, year, population coverage, and whether categories are mutually exclusive before drawing policy conclusions. Second, interpret monetary columns as dollars and percent columns as percentages only after checking the source documentation; avoid comparing averages across unlike measures. Third, review missing and nonnumeric cells before deciding whether imputation or exclusion is appropriate. Fourth, if income brackets and household counts are present, analyze their distribution using those counts as weights rather than treating every bracket equally. Finally, compare the same definitions across additional years or geographic areas before asserting trends or geographic differences.
+
+**Limitations.** This is a descriptive analysis of the supplied file, not a causal study. The automatic first-column identifier rule and numerical parsing are transparent, but should be checked against the exact CSV schema. Income-bin labels, percentages and monetary amounts can have different interpretations.
+
+# 6. Reproducibility
+
+Required R packages are `readr`, `dplyr`, `tidyr`, `stringr`, `ggplot2`, `knitr`, and `scales`. No manual changes to the source CSV are required. The report has no random analysis; a seed is set for consistency. 
