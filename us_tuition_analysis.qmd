@@ -1,0 +1,310 @@
+---
+title: "DATA 607 Project 2: U.S. Average Tuition — Data Tidying and Analysis"
+subtitle: "Dataset 2 — Tuition Table 5"
+author: "Chanice McKenzie"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+  pdf:
+    toc: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(knitr)
+library(scales)
+set.seed(123)
+theme_set(theme_minimal(base_size = 12))
+```
+
+# Overview
+
+This report preserves the original wide-format U.S. average tuition Table 5 file, documents its structure, converts repeated measurement columns into tidy rows, and summarizes tuition values and differences across available groups and periods. The analysis is descriptive, not causal. The report displays the original schema and documents how measurement columns are identified.  
+
+# 1. Data source and raw data construction (Step 3.1)
+
+**Immediate data source:** [U.S. average tuition (Table 5), CSV](https://chanicemcken.github.io/Data-607-Project-2/us_avg_tuition%28Table%205%29.csv), hosted in the DATA 607 Project 2 repository. The hosting repository is the immediate source; the original statistical publisher, measurement units, reference years, and table notes must be verified against the CSV's source documentation before any substantive claims are made.
+
+**Raw-data preservation:**  The following import reads the local file preferentially, falling back to the repository-hosted file only if needed. No transformation is applied to the saved raw CSV.
+
+```{r}
+#| label: raw-import
+filename <- "us_avg_tuition(Table 5).csv"
+local_paths <- c(file.path("data", filename), filename)
+found <- local_paths[file.exists(local_paths)]
+source_url <- paste0(
+  "https://chanicemcken.github.io/Data-607-Project-2/",
+  "us_avg_tuition%28Table%205%29.csv"
+)
+source_path <- if (length(found)) found[[1]] else source_url
+
+# Preserve original column headings; do not overwrite the source file.
+tuition_raw <- read_csv(source_path, name_repair = "minimal",
+                        show_col_types = FALSE, col_types = cols(.default = col_character()))
+stopifnot(nrow(tuition_raw) > 0, ncol(tuition_raw) > 1)
+```
+
+# 2. Structure before tidying
+
+The original wide dataset has `r nrow(tuition_raw)` rows and `r ncol(tuition_raw)` columns. Its original column headings and first six rows appear below.
+
+```{r}
+#| label: raw-structure
+kable(data.frame(position = seq_along(names(tuition_raw)),
+                 original_column_name = names(tuition_raw)),
+      caption = "Original column names in the raw CSV")
+kable(head(tuition_raw, 6), caption = "Representative sample of the original wide data")
+```
+
+# 3. Reproducible import and tidying (Step 3.2)
+
+## 3.1 Normalize headings and identify the wide columns
+
+Column names are converted to lowercase snake_case, while unique suffixes prevent accidental duplicate names. Numeric-like columns are identified by their nonmissing values; this prevents an identifying text column from being pivoted as a measurement. Columns with year or academic-year headings are preferentially selected as repeated measures. If no year columns exist, numeric-like columns are selected instead. This is a documented, generic fallback; review the printed selections against the original Table 5 headings before submitting.
+
+```{r}
+#| label: normalize-identify
+clean_names <- function(x) {
+  x <- str_to_lower(str_trim(x))
+  x <- str_replace_all(x, "[^a-z0-9]+", "_")
+  x <- str_replace_all(x, "^_+|_+$", "")
+  x[x == ""] <- "unnamed"
+  make.unique(x, sep = "_")
+}
+
+tuition_named <- tuition_raw |>
+  rename_with(clean_names) |>
+  mutate(across(everything(), ~ na_if(str_trim(as.character(.x)), "")))
+
+numeric_share <- vapply(tuition_named, function(x) {
+  nonmissing <- x[!is.na(x) & !str_to_lower(x) %in% c("na", "n/a", "--", "-", "suppressed")]
+  if (!length(nonmissing)) return(0)
+  mean(!is.na(parse_number(nonmissing)))
+}, numeric(1))
+
+# Detect repeated year headings (e.g., 2021, 2021_22, 2021_2022).
+year_columns <- names(tuition_named)[str_detect(
+  names(tuition_named), "(^|_)(19|20)[0-9]{2}($|_)"
+)]
+
+# Exclude obvious identifiers from the fallback numeric-measure selection.
+identifier_names <- str_detect(names(tuition_named),
+  "(^|_)(id|code|fips|rank|number|no)($|_)")
+numeric_columns <- names(tuition_named)[numeric_share >= 0.8 & !identifier_names]
+measure_columns <- if (length(year_columns) >= 2) {
+  year_columns
+} else {
+  numeric_columns
+}
+
+if (length(measure_columns) < 2) {
+  stop("Fewer than two wide measurement columns detected. Inspect the raw table and explicitly set measure_columns to the appropriate original columns.")
+}
+identifier_columns <- setdiff(names(tuition_named), measure_columns)
+
+kable(data.frame(measure_column = measure_columns),
+      caption = "Wide columns selected for pivot_longer()")
+kable(data.frame(identifier_column = identifier_columns),
+      caption = "Columns retained as identifiers or group attributes")
+```
+
+## 3.2 Pivot, normalize values, and document missing data
+
+Each selected wide measurement column becomes a value of `measure`, and its cell contents become `tuition_value`. Currency symbols and thousands separators are parsed consistently. Missing, blank, or nonnumeric values are retained as `NA`, not silently replaced with zero. No rows are dropped automatically, so missingness remains auditable. The identifier columns are preserved unchanged except for whitespace normalization.
+
+```{r}
+#| label: tidy-pipeline
+# Wide -> long; every measure is an observation rather than a separate column.
+tuition_tidy <- tuition_named |>
+  mutate(source_row = row_number()) |>
+  pivot_longer(
+    cols = all_of(measure_columns),
+    names_to = "measure",
+    values_to = "raw_value",
+    values_drop_na = FALSE
+  ) |>
+  mutate(
+    raw_value = na_if(str_trim(raw_value), ""),
+    tuition_value = parse_number(raw_value,
+      na = c("", "NA", "N/A", "-", "--", "suppressed"))
+  ) |>
+  relocate(source_row, all_of(identifier_columns), measure,
+           raw_value, tuition_value)
+
+# Validation: pivot_longer should preserve every original cell.
+stopifnot(nrow(tuition_tidy) == nrow(tuition_named) * length(measure_columns))
+stopifnot(!anyDuplicated(tuition_tidy[c("source_row", "measure")]))
+
+missing_summary <- tuition_tidy |>
+  group_by(measure) |>
+  summarise(
+    observations = n(),
+    missing_values = sum(is.na(tuition_value)),
+    missing_pct = 100 * mean(is.na(tuition_value)),
+    .groups = "drop"
+  )
+kable(missing_summary, digits = 1,
+      caption = "Missing and unparseable numeric values by measure")
+kable(head(tuition_tidy, 10), caption = "Representative sample of tidy data")
+```
+
+## 3.3 Data quality and tidy export
+
+A numerical value of zero is retained when explicitly present, but blanks and suppressed entries remain missing. No imputation is performed because missing tuition figures cannot be safely inferred from other groups. All source rows are retained, including those with missing measurements. The original wide file is never modified.
+
+```{r}
+#| label: quality-export
+quality_checks <- tibble(
+  check = c("Raw source rows", "Repeated measure columns",
+            "Expected tidy rows", "Actual tidy rows", "Missing numeric values"))
+  value = c(nrow(tuition_raw), length(measure_columns),
+            nrow(tuition_raw) * length(measure_columns),
+            nrow(tuition_tidy), sum(is.na(tuition_tidy$tuition_value)))
+kable(quality_checks, caption = "Data validation checks")
+
+# Save the tidy dataset without changing the original source.
+dir.create("data", showWarnings = FALSE)
+write_csv(tuition_tidy, "data/us_avg_tuition_tidy.csv", na = "")
+```
+
+# 4. Analysis of the tidy data (Step 3.3)
+
+## Analytical methods
+
+For each measurement category, this analysis calculates the number of nonmissing observations, mean, median, minimum, and maximum. It also visualizes the distribution of values across categories. These comparisons use only `tuition_tidy`, not the wide input. Units are reported as *source-table units* because the original table's unit definition (e.g., current dollars, constant dollars, annual tuition and fees) has not been independently confirmed.
+
+```{r}
+#| label: descriptive-summary
+measure_summary <- tuition_tidy |>
+  group_by(measure) |>
+  summarise(
+    n_nonmissing = sum(!is.na(tuition_value)),
+    mean_source_units = if (all(is.na(tuition_value))) NA_real_ else mean(tuition_value, na.rm = TRUE),
+    median_source_units = if (all(is.na(tuition_value))) NA_real_ else median(tuition_value, na.rm = TRUE),
+    min_source_units = if (all(is.na(tuition_value))) NA_real_ else min(tuition_value, na.rm = TRUE),
+    max_source_units = if (all(is.na(tuition_value))) NA_real_ else max(tuition_value, na.rm = TRUE),
+    .groups = "drop"
+  )
+kable(measure_summary, digits = 2,
+      caption = "Descriptive statistics by measurement column (source-table units)")
+```
+
+## Figure 1. Average reported values by measure
+
+A column chart makes it straightforward to compare the mean across the wide-table measurement categories. The mean is descriptive and may conceal within-category variation.
+
+```{r}
+#| label: fig-mean
+#| fig-cap: "Mean reported value by measurement category"
+ggplot(measure_summary, aes(x = reorder(measure, mean_source_units),
+                            y = mean_source_units)) +
+  geom_col(fill = "#336699", na.rm = TRUE) +
+  coord_flip() +
+  scale_y_continuous(labels = label_comma()) +
+  labs(title = "Average U.S. tuition-table values by measure",
+       x = "Measurement category", y = "Mean (source-table units)")
+```
+
+## Figure 2. Distribution of values
+
+A boxplot shows medians, interquartile ranges, and potential outliers, revealing variation that averages alone may obscure.
+
+```{r}
+#| label: fig-boxplot
+#| fig-cap: "Distribution of reported values across measurement categories"
+ggplot(tuition_tidy, aes(x = measure, y = tuition_value)) +
+  geom_boxplot(fill = "#80b1d3", na.rm = TRUE) +
+  coord_flip() +
+  scale_y_continuous(labels = label_comma()) +
+  labs(title = "Distribution of tuition-table values",
+       x = "Measurement category", y = "Value (source-table units)")
+```
+
+## Figure 3. Missingness by measure
+
+This chart documents where observations are unavailable. Missing values are excluded from numerical summaries but counted in this figure.
+
+```{r}
+#| label: fig-missing
+#| fig-cap: "Percentage of missing or unparseable entries by measure"
+ggplot(missing_summary, aes(x = reorder(measure, missing_pct), y = missing_pct)) +
+  geom_col(fill = "#7a7a7a") +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 100), labels = label_percent(scale = 1)) +
+  labs(title = "Missing values by measurement category",
+       x = "Measurement category", y = "Missing observations (%)")
+```
+
+# 5. Conclusions and recommendations
+
+## Findings based on the tidy data
+
+```{r}
+#| label: derived-findings
+#| results: asis
+available <- measure_summary |>
+  filter(!is.na(mean_source_units)) |>
+  arrange(desc(mean_source_units))
+
+if (nrow(available) >= 2) {
+  highest <- available[1, ]
+  lowest <- available[nrow(available), ]
+  difference <- highest$mean_source_units - lowest$mean_source_units
+  cat(paste0(
+    "The highest numerical category mean was **", highest$measure,
+    "** (", comma(round(highest$mean_source_units, 2)),
+    " source-table units). The lowest was **", lowest$measure,
+    "** (", comma(round(lowest$mean_source_units, 2)),
+    " source-table units), a numerical difference of **",
+    comma(round(difference, 2)), "** units. This difference should be",
+    " interpreted only if both categories represent comparable tuition",
+    " measures on the same scale.\n\n"
+  ))
+} else if (nrow(available) == 1) {
+  cat(paste0("The only category with usable numerical data was **",
+             available$measure[1], "**, with a mean of **",
+             comma(round(available$mean_source_units[1], 2)),
+             "** source-table units.\n\n"))
+} else {
+  cat("No numerical values were available for a quantitative comparison.\n\n")
+}
+
+missing_n <- sum(is.na(tuition_tidy$tuition_value))
+missing_pct_all <- 100 * mean(is.na(tuition_tidy$tuition_value))
+cat(paste0(
+  "The tidy dataset contains **", comma(nrow(tuition_tidy)),
+  "** long-format records. Of these, **", comma(missing_n),
+  "** (", round(missing_pct_all, 1),
+  "%) are missing or unparseable. Missing entries were retained",
+  " as NA rather than replaced with zero.\n\n"
+))
+```
+
+The analysis is descriptive rather than causal. A larger mean does not by itself show that a type of institution is less affordable, because tuition may be defined differently across categories or years. The figures show numerical patterns in the source table; the underlying units, population, time period, and any weighting must be checked before making substantive comparisons. Boxplots are meaningful only where each measurement category has multiple comparable observations.
+
+## Recommendations
+
+1. **Verify definitions and units before reporting tuition differences.** Consult the original Table 5 notes to determine whether values are annual tuition, tuition and fees, current dollars, constant dollars, or another measure. Only compare values measured on a consistent basis.
+2. **Investigate missing or suppressed entries.** Use the missingness table to identify affected categories. Keep missing values as `NA` unless a documented and defensible imputation strategy is available.
+3. **Prioritize like-for-like comparisons.** If the dataset includes institution sector, degree level, geography, or year, compare within the same grouping and use percent changes for time comparisons when appropriate. Do not combine fundamentally different measures into one average.
+4. **Extend the analysis with context.** Where available, compare tuition with household income, financial aid, or inflation-adjusted costs to evaluate affordability rather than nominal tuition alone.
+5. **Preserve reproducibility.** Keep the original CSV unchanged, commit it separately to GitHub, and render the Quarto report from the repository root before submission.
+
+These are analytical recommendations, not evidence that any particular policy or institution caused the observed differences.
+
+# 6. Reproducibility and submission notes
+
+This report uses only local, repository-relative file paths when the raw CSV is committed to `data/`. The file `data/us_avg_tuition_tidy.csv` is generated automatically. The seed is fixed at 123 although the analyses do not use randomness. Commit the untouched raw CSV first, followed by this `.qmd` and the resulting output. The original source table and its notes remain accessible in the repository.
