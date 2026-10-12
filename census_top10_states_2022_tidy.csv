@@ -1,0 +1,31 @@
+rank,state,period,observation_date,population
+1,California,2020_estimates_base,2020-04-01,39538245
+1,California,2021_july,2021-07-01,39142991
+1,California,2022_july,2022-07-01,39029342
+2,Texas,2020_estimates_base,2020-04-01,29145428
+2,Texas,2021_july,2021-07-01,29558864
+2,Texas,2022_july,2022-07-01,30029572
+3,Florida,2020_estimates_base,2020-04-01,21538226
+3,Florida,2021_july,2021-07-01,21828069
+3,Florida,2022_july,2022-07-01,22244823
+4,New York,2020_estimates_base,2020-04-01,20201230
+4,New York,2021_july,2021-07-01,19857492
+4,New York,2022_july,2022-07-01,19677151
+5,Pennsylvania,2020_estimates_base,2020-04-01,13002689
+5,Pennsylvania,2021_july,2021-07-01,13012059
+5,Pennsylvania,2022_july,2022-07-01,12972008
+6,Illinois,2020_estimates_base,2020-04-01,12812545
+6,Illinois,2021_july,2021-07-01,12686469
+6,Illinois,2022_july,2022-07-01,12582032
+7,Ohio,2020_estimates_base,2020-04-01,11799374
+7,Ohio,2021_july,2021-07-01,11764342
+7,Ohio,2022_july,2022-07-01,11756058
+8,Georgia,2020_estimates_base,2020-04-01,10711937
+8,Georgia,2021_july,2021-07-01,10788029
+8,Georgia,2022_july,2022-07-01,10912876
+9,North Carolina,2020_estimates_base,2020-04-01,10439414
+9,North Carolina,2021_july,2021-07-01,10565885
+9,North Carolina,2022_july,2022-07-01,10698973
+10,Michigan,2020_estimates_base,2020-04-01,10077325
+10,Michigan,2021_july,2021-07-01,10037504
+10,Michigan,2022_july,2022-07-01,10034113

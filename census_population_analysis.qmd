@@ -1,0 +1,288 @@
+---
+title: "DATA 607 Project 2: Tidying and Analyzing U.S. State Population Data"
+subtitle: "Dataset 1 — Ten Most Populous States, 2020–2022"
+author: "Chanice McKenzie"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+  pdf:
+    toc: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(knitr)
+library(scales)
+set.seed(123)
+theme_set(theme_minimal(base_size = 12))
+```
+
+# Overview and research questions
+
+This report demonstrates a reproducible data-preparation pipeline for one of the three datasets required by DATA 607 Project 2. The objective is to preserve the original wide data, convert it to a tidy state-by-period structure, validate the conversion, and analyze population changes among the ten states ranked highest in the supplied 2022 dataset.
+
+The research questions are: (1) Which of these states experienced the largest absolute and percentage population changes between the April 2020 estimates base and July 2022? (2) Which states gained or lost population from July 2021 to July 2022? (3) How do population trends compare across the ten states?
+
+# 1. Data source and raw data construction (Step 3.1)
+
+**Source file:** [census_top10_states_2022_untidy.csv](https://chanicemcken.github.io/Data-607-Project-2/census_top10_states_2022_untidy.csv), stored in GitHub. The source file contains population estimates labeled *April 1, 2020 (Estimates Base)*, *July 1, 2021*, and *July 1, 2022*, with a state rank and geographic area. The data are Census-style state population estimates; the linked CSV is the immediate data source for this analysis.
+
+**Raw-file preservation:** The original CSV is retained in its supplied wide format, without manual editing. The reproducible code first looks for a repository-local copy in `data/` or the repository root; if neither is present, it reads the version hosted on GitHub.
+
+```{r}
+#| label: import-raw
+source_url <- paste0(
+  "https://raw.githubusercontent.com/chanicemcken/",
+  "Data-607-Project-2/main/census_top10_states_2022_untidy.csv"
+)
+local_candidates <- c(
+  "data/census_top10_states_2022_untidy.csv",
+  "census_top10_states_2022_untidy.csv"
+)
+existing_files <- local_candidates[file.exists(local_candidates)]
+source_path <- if (length(existing_files) > 0) existing_files[1] else source_url
+
+# Read all columns, preserving the original column names.
+census_raw <- read_csv(source_path, show_col_types = FALSE)
+stopifnot(nrow(census_raw) > 0, ncol(census_raw) == 5)
+```
+
+# 2. Original wide-format structure
+
+The original data contain `r nrow(census_raw)` rows and `r ncol(census_raw)` columns. Each row represents a state, while the three population periods occupy separate columns. The period labels are stored in column headings instead of in a single observation variable, making the file wide rather than tidy for longitudinal analysis.
+
+```{r}
+#| label: original-structure
+original_columns <- tibble(column_name = names(census_raw))
+kable(original_columns, caption = "Original column names")
+kable(head(census_raw, 5), caption = "Representative sample of raw wide-format data", format.args = list(big.mark = ","))
+glimpse(census_raw)
+```
+
+# 3. Import, normalization, and tidying (Step 3.2)
+
+The transformation preserves all three periods and all ten states. First, descriptive columns are renamed to consistent `snake_case`. Next, `pivot_longer()` converts the three population columns into a `period` and `population` pair. The three original date labels are mapped to normalized period identifiers and their precise dates. The 2020 value is an **estimates base**, not a July 2020 observation; the interval from April 2020 to July 2022 is therefore not two equally spaced annual observations.
+
+Missing values are handled conservatively: blank text is converted to `NA`, population values are parsed as numbers, and missing values are **retained and counted** rather than silently removed. The analysis excludes missing population values only where a calculation requires a numeric value. Any unrecognized period labels cause the pipeline to stop, rather than silently mislabel observations.
+
+```{r}
+#| label: tidy-data
+required_columns <- c(
+  "Rank", "Geographic Area", "April 1, 2020 (Estimates Base)",
+  "July 1, 2021", "July 1, 2022"
+)
+stopifnot(all(required_columns %in% names(census_raw)))
+
+census_tidy <- census_raw |>
+  rename(rank = `Rank`, state = `Geographic Area`) |>
+  pivot_longer(
+    cols = all_of(required_columns[3:5]),
+    names_to = "period_original",
+    values_to = "population_raw",
+    values_transform = list(population_raw = as.character)
+  ) |>
+  mutate(
+    state = na_if(str_squish(as.character(state)), ""),
+    rank = parse_integer(as.character(rank)),
+    period = case_when(
+      period_original == "April 1, 2020 (Estimates Base)" ~ "2020_estimates_base",
+      period_original == "July 1, 2021" ~ "2021_july",
+      period_original == "July 1, 2022" ~ "2022_july",
+      TRUE ~ NA_character_
+    ),
+    observation_date = as.Date(case_when(
+      period == "2020_estimates_base" ~ "2020-04-01",
+      period == "2021_july" ~ "2021-07-01",
+      period == "2022_july" ~ "2022-07-01",
+      TRUE ~ NA_character_
+    )),
+    population_raw = na_if(str_squish(population_raw), ""),
+    population = parse_number(population_raw)
+  ) |>
+  select(rank, state, period, observation_date, population) |>
+  arrange(rank, observation_date)
+
+# Explicit validation of mapping, uniqueness, and preservation.
+stopifnot(
+  !anyNA(census_tidy$period),
+  nrow(census_tidy) == nrow(census_raw) * 3,
+  nrow(distinct(census_tidy, state, period)) == nrow(census_tidy),
+  all(census_tidy$population >= 0, na.rm = TRUE)
+)
+
+kable(head(census_tidy, 9), caption = "Tidy data: one row per state and period")
+```
+
+## Missing-value audit and quality checks
+
+```{r}
+#| label: data-quality
+missing_summary <- census_tidy |>
+  summarise(
+    rows = n(),
+    distinct_states = n_distinct(state),
+    distinct_periods = n_distinct(period),
+    missing_state = sum(is.na(state)),
+    missing_rank = sum(is.na(rank)),
+    missing_population = sum(is.na(population))
+  )
+kable(missing_summary, caption = "Completeness audit after tidying")
+
+stopifnot(
+  !anyNA(census_tidy$state),
+  !anyNA(census_tidy$rank),
+  n_distinct(census_tidy$state) == nrow(census_raw),
+  n_distinct(census_tidy$period) == 3,
+  all(census_tidy$rank %in% 1:10)
+)
+```
+
+The tidy data contain `r nrow(census_tidy)` state-period records. The completeness audit identifies `r missing_summary$missing_population` missing population values. Original state rankings are retained as source attributes; they are not recalculated for prior years.
+
+# 4. Analysis methods (Step 3.3)
+
+For each state, absolute population change is the later population minus the earlier population, measured in **residents**. Percentage change is the absolute change divided by the earlier population, multiplied by 100. Two comparisons are calculated: April 2020 estimates base to July 2022, and July 2021 to July 2022. The first spans approximately 27 months, so it is **not** labeled an annual growth rate. These are descriptive comparisons, not causal estimates or inferential tests.
+
+All analyses below start from `census_tidy` rather than the original wide-format file. A temporary pivot to one row per state is used only to calculate paired differences from the tidy source.
+
+```{r}
+#| label: calculate-changes
+population_change <- census_tidy |>
+  select(state, rank, period, population) |>
+  pivot_wider(names_from = period, values_from = population) |>
+  mutate(
+    change_2020_2022 = `2022_july` - `2020_estimates_base`,
+    pct_change_2020_2022 = 100 * change_2020_2022 / `2020_estimates_base`,
+    change_2021_2022 = `2022_july` - `2021_july`,
+    pct_change_2021_2022 = 100 * change_2021_2022 / `2021_july`
+  ) |>
+  arrange(desc(change_2020_2022))
+
+stopifnot(nrow(population_change) == n_distinct(census_tidy$state))
+```
+
+## 4.1 Population change from April 2020 to July 2022
+
+```{r}
+#| label: population-change-table
+summary_table <- population_change |>
+  transmute(
+    State = state,
+    `2020 estimates base (residents)` = `2020_estimates_base`,
+    `July 2022 (residents)` = `2022_july`,
+    `Change (residents)` = change_2020_2022,
+    `Change (%)` = round(pct_change_2020_2022, 2)
+  )
+kable(summary_table, caption = "State population change: April 2020 estimates base to July 2022", format.args = list(big.mark = ","))
+```
+
+```{r}
+#| label: population-change-plot
+#| fig-cap: "Absolute population change from April 2020 estimates base to July 2022. A diverging bar chart makes gains and losses easy to compare."
+ggplot(population_change, aes(x = reorder(state, change_2020_2022), y = change_2020_2022,
+                              fill = change_2020_2022 >= 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_y_continuous(labels = label_comma()) +
+  scale_fill_manual(values = c("TRUE" = "#247C6D", "FALSE" = "#BA564E")) +
+  labs(title = "Population gains and losses among ten states",
+       subtitle = "April 2020 estimates base to July 2022",
+       x = "State", y = "Population change (residents)")
+```
+
+```{r}
+#| label: narrative-values
+largest_gain <- population_change |> slice_max(change_2020_2022, n = 1, with_ties = FALSE)
+largest_loss <- population_change |> slice_min(change_2020_2022, n = 1, with_ties = FALSE)
+largest_pct_gain <- population_change |> slice_max(pct_change_2020_2022, n = 1, with_ties = FALSE)
+```
+
+**Interpretation.** `r largest_gain$state` recorded the largest absolute increase among these states, gaining `r comma(largest_gain$change_2020_2022)` residents (`r number(largest_gain$pct_change_2020_2022, accuracy = 0.01)`%). `r largest_loss$state` experienced the largest absolute decrease, changing by `r comma(largest_loss$change_2020_2022)` residents (`r number(largest_loss$pct_change_2020_2022, accuracy = 0.01)`%). The largest *percentage* gain was in `r largest_pct_gain$state` (`r number(largest_pct_gain$pct_change_2020_2022, accuracy = 0.01)`%). Absolute and percentage rankings need not be identical because states have different initial population sizes.
+
+## 4.2 Population change from July 2021 to July 2022
+
+```{r}
+#| label: annual-change-table
+annual_table <- population_change |>
+  arrange(desc(pct_change_2021_2022)) |>
+  transmute(
+    State = state,
+    `2021–2022 change (residents)` = change_2021_2022,
+    `2021–2022 change (%)` = round(pct_change_2021_2022, 2)
+  )
+kable(annual_table, caption = "July 2021 to July 2022 population changes", format.args = list(big.mark = ","))
+```
+
+```{r}
+#| label: annual-change-plot
+#| fig-cap: "Percentage change from July 2021 to July 2022. Percentages allow comparisons across states with different population sizes."
+ggplot(population_change, aes(x = reorder(state, pct_change_2021_2022),
+                              y = pct_change_2021_2022,
+                              fill = pct_change_2021_2022 >= 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#247C6D", "FALSE" = "#BA564E")) +
+  labs(title = "One-year population percentage change",
+       subtitle = "July 2021 to July 2022",
+       x = "State", y = "Population change (%)")
+```
+
+```{r}
+#| label: annual-narrative-values
+annual_top <- population_change |> slice_max(pct_change_2021_2022, n = 1, with_ties = FALSE)
+annual_bottom <- population_change |> slice_min(pct_change_2021_2022, n = 1, with_ties = FALSE)
+annual_gainers <- sum(population_change$change_2021_2022 > 0, na.rm = TRUE)
+annual_decliners <- sum(population_change$change_2021_2022 < 0, na.rm = TRUE)
+```
+
+**Interpretation.** Between July 2021 and July 2022, `r annual_gainers` of the ten states gained population and `r annual_decliners` lost population. `r annual_top$state` had the largest percentage gain (`r number(annual_top$pct_change_2021_2022, accuracy = 0.01)`%), while `r annual_bottom$state` had the lowest percentage change (`r number(annual_bottom$pct_change_2021_2022, accuracy = 0.01)`%).
+
+## 4.3 Population trajectories across the three observations
+
+```{r}
+#| label: population-trends-plot
+#| fig-cap: "Population trajectories for the ten states. A line chart highlights direction of change; note the uneven gap between the April 2020 estimates base and July 2021."
+ggplot(census_tidy, aes(x = observation_date, y = population, group = state, color = state)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%b %Y") +
+  scale_y_continuous(labels = label_number(scale = 1e-6, suffix = "M")) +
+  labs(title = "Population trajectories, 2020–2022",
+       subtitle = "2020 estimates base and July 2021/2022 estimates",
+       x = "Observation date", y = "Population (millions of residents)", color = "State") +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(ncol = 2))
+```
+
+**Chart selection.** The line chart emphasizes how each state's estimated population changed across the three dates, whereas the bar charts compare the magnitudes of changes between endpoints. Lines connect observed estimates; they do not imply that intermediate monthly values were measured.
+
+# 5. Conclusions and limitations
+
+The results indicate substantial differences in population change among the ten states in the supplied data. Across the April 2020 estimates base to July 2022 interval, `r largest_gain$state` had the greatest numeric gain (`r comma(largest_gain$change_2020_2022)` residents), while `r largest_loss$state` had the greatest numeric loss (`r comma(abs(largest_loss$change_2020_2022))` residents if the change was negative). During the more directly comparable July 2021–July 2022 interval, `r annual_top$state` recorded the strongest percentage growth (`r number(annual_top$pct_change_2021_2022, accuracy = 0.01)`%). These findings show why both absolute and relative change are useful: large states may lead in resident counts without leading in percentage growth.
+
+There are important limitations. The dataset covers only ten selected states, not all U.S. states, so findings should not be generalized to the entire country. The April 2020 figure is an estimates base rather than a July estimate, and the observation intervals are unequal. Population estimates can be revised; this analysis uses only the values in the supplied CSV. Finally, these descriptive comparisons cannot establish why populations changed: migration, births, deaths, and other factors would require additional data.
+
+# 6. Reproducibility and export
+
+The report uses only the source CSV and standard R packages (`dplyr`, `tidyr`, `readr`, `stringr`, `ggplot2`, `knitr`, and `scales`). The following chunk saves the tidy state-period dataset and derived change table to a generated-output folder; the original wide-format CSV remains unchanged.
+
+```{r}
+#| label: export-results
+if (!dir.exists("output")) dir.create("output", recursive = TRUE)
+write_csv(census_tidy, "output/census_top10_states_2022_tidy.csv")
+write_csv(population_change, "output/census_population_change_summary.csv")
+```
+
